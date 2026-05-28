@@ -1,90 +1,114 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-# 1. Carregar imagem (ou criar sintética para teste)
-imagem = cv2.imread('Teste1.png')
+# Imagens de teste
+imagens = [
+    "Teste1.png",
+    "Teste3.png",
+    "Teste4.png",
+    "Teste5.png",
+    "Teste6.png",
+    "Teste7.png",
+    "Teste8.png",
+]
 
-imagem_colorida = imagem.copy()
-imagem = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
+def detectar_cristais(caminho):
+    img = cv2.imread(caminho)
+    original = img.copy()
 
-# 2. Suavizar para reduzir ruído
-imagem_suave = cv2.GaussianBlur(imagem, (5,5), 1)
+    # 1. Cinza
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-# 3. Detectar bordas com Canny
-bordas = cv2.Canny(imagem_suave, 30, 100)
+    # 2. Melhorar contraste local
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
 
-# 4. Fechar as bordas (dilatação + erosão)
-kernel = np.ones((3,3), np.uint8)
-bordas_fechadas = cv2.morphologyEx(bordas, cv2.MORPH_CLOSE, kernel)
+    # 3. Suavizar ruído
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-# 5. Encontrar contornos
-contornos, _ = cv2.findContours(bordas_fechadas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 4. Segmentação por borda
+    edges = cv2.Canny(blur, 25, 90)
 
-# 6. Calcular áreas e perímetros
-areas = []
-perimetros = []
+    # 5. Fechar falhas nas bordas
+    kernel = np.ones((3, 3), np.uint8)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+    edges = cv2.dilate(edges, kernel, iterations=1)
 
-for i, contorno in enumerate(contornos):
-    area = cv2.contourArea(contorno)
-    perimetro = cv2.arcLength(contorno, True)
-    areas.append(area)
-    perimetros.append(perimetro)
-    print(f"Objeto {i+1}: Área = {area:.2f} px² | Perímetro = {perimetro:.2f} px")
+    # 6. Encontrar contornos
+    contornos, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# 7. Desenhar contornos na imagem original com numeração
-resultado = imagem_colorida.copy()
-for i, contorno in enumerate(contornos):
-    # Desenhar contorno
-    cv2.drawContours(resultado, [contorno], -1, (0, 255, 0), 2)
-    
-    # Calcular centroide para colocar número
-    M = cv2.moments(contorno)
-    if M["m00"] != 0:
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        cv2.putText(resultado, str(i+1), (cx, cy), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    detectados = []
+
+    for c in contornos:
+        area = cv2.contourArea(c)
+        if area < 25 or area > 8000:
+            continue
+
+        perimetro = cv2.arcLength(c, True)
+        if perimetro == 0:
+            continue
+
+        x, y, w, h = cv2.boundingRect(c)
+        razao = w / float(h)
+
+        circularidade = 4 * np.pi * area / (perimetro ** 2)
+
+        # Aproximação poligonal: útil para cistina/hexágonos
+        approx = cv2.approxPolyDP(c, 0.04 * perimetro, True)
+        vertices = len(approx)
+
+        # Filtros gerais:
+        # - cristais hexagonais: 5 a 7 vértices
+        # - cristais aglomerados/radiais: contorno irregular, circularidade média
+        possivel_hexagono = 5 <= vertices <= 7 and 0.55 <= razao <= 1.45
+        possivel_aglomerado = area > 60 and 0.25 <= circularidade <= 0.95
+
+        if possivel_hexagono or possivel_aglomerado:
+            detectados.append(c)
+
+            if possivel_hexagono:
+                cor = (255, 0, 0)   # azul: possível cistina
+                label = "hexagonal"
+            else:
+                cor = (0, 255, 0)   # verde: possível cristal/agregado
+                label = "cristal"
+
+            cv2.drawContours(original, [c], -1, cor, 2)
+            cv2.putText(
+                original,
+                label,
+                (x, y - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                cor,
+                1
+            )
+
+    return img, gray, edges, original, len(detectados)
 
 
-# 9. Mostrar resultados
-fig = plt.figure(figsize=(15, 5))
+for caminho in imagens:
+    img, gray, edges, result, qtd = detectar_cristais(caminho)
 
-plt.subplot(1, 3, 1)
-plt.imshow(imagem, cmap='gray')
-plt.title('Imagem Original')
-plt.axis('off')
+    plt.figure(figsize=(14, 4))
 
-plt.subplot(1, 3, 2)
-plt.imshow(bordas, cmap='gray')
-plt.title('Bordas Detectadas')
-plt.axis('off')
+    plt.subplot(1, 3, 1)
+    plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    plt.title("Original")
+    plt.axis("off")
 
-plt.subplot(1, 3, 3)
-plt.imshow(cv2.cvtColor(resultado, cv2.COLOR_BGR2RGB))
-plt.title(f'Segmentação Final ({len(contornos)} objetos)')
-plt.axis('off')
+    plt.subplot(1, 3, 2)
+    plt.imshow(edges, cmap="gray")
+    plt.title("Bordas - Canny")
+    plt.axis("off")
 
-plt.tight_layout()
-plt.show()
+    plt.subplot(1, 3, 3)
+    plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    plt.title(f"Detectados: {qtd}")
+    plt.axis("off")
 
-# 10. Gráfico de barras com áreas
-plt.figure(figsize=(10, 4))
-
-plt.subplot(1, 2, 1)
-objetos = [f'Obj {i+1}' for i in range(len(areas))]
-plt.bar(objetos, areas, color='green', alpha=0.7)
-plt.title('Área por Objeto (px²)')
-plt.xlabel('Objeto')
-plt.ylabel('Área (px²)')
-plt.xticks(rotation=45)
-
-plt.subplot(1, 2, 2)
-plt.bar(objetos, perimetros, color='blue', alpha=0.7)
-plt.title('Perímetro por Objeto (px)')
-plt.xlabel('Objeto')
-plt.ylabel('Perímetro (px)')
-plt.xticks(rotation=45)
-
-plt.tight_layout()
-plt.show()
+    plt.suptitle(caminho)
+    plt.tight_layout()
+    plt.show()
